@@ -1,19 +1,21 @@
 import streamlit as st
-from transformers import BlipProcessor, BlipForConditionalGeneration
 from PIL import Image
 import torch
-import os
-from langchain.chains import LLMChain
+from transformers import BlipProcessor, BlipForConditionalGeneration
 from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
+from langchain_community.chat_models import ChatOpenAI
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import PromptTemplate
 from dotenv import load_dotenv
+import os
 
 # ---------- CONFIG ----------
-
 load_dotenv()
-os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+openai_api_key = os.getenv("OPENAI_API_KEY")
+os.environ["OPENAI_API_KEY"] = openai_api_key
 
-# Load BLIP model
+
 processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
 model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
 
@@ -25,70 +27,59 @@ def caption_image(image):
     caption = processor.decode(out[0], skip_special_tokens=True)
     return caption
 
-# ---------- LANGUAGE MODELS ----------
-
 llm = ChatOpenAI(temperature=0)
 
-# Agent 1: Property Issue Troubleshooter
 agent1_prompt = PromptTemplate.from_template(
-    "You're a helpful property inspection expert. Based on the image caption and user description, identify the issue and suggest practical next steps.\n\n"
-    "🖼️ Image Description: {caption}\n📝 User Description: {text}\n\nWhat could be the issue and how can it be resolved?"
+    "You are a property inspection assistant. Given an image caption and user query, detect issues and suggest fixes.\n\nImage Caption: {caption}\nUser Text: {text}\nAnswer:"
 )
-agent1_chain = LLMChain(llm=llm, prompt=agent1_prompt)
+agent1_chain = agent1_prompt | llm | StrOutputParser()
 
-# Agent 2: Tenancy Law FAQ Assistant
 agent2_prompt = PromptTemplate.from_template(
-    "You're a friendly tenancy legal assistant. Provide a clear and concise answer to the user's question. If you need more context (like location), ask politely.\n\n"
-    "User Question: {input}\n\nAnswer:"
+    "You are a legal assistant for tenancy-related questions. Provide jurisdiction-specific, helpful answers.\n\nUser Question: {input}\nAnswer:"
 )
-agent2_chain = LLMChain(llm=llm, prompt=agent2_prompt)
+agent2_chain = agent2_prompt | llm | StrOutputParser()
 
-# ---------- ROUTING ----------
 
 def route_agent(image, text):
     if image is not None:
         return "agent1"
-    keywords = ["notice", "evict", "deposit", "landlord", "tenant", "rent", "contract", "agreement", "lease"]
+    keywords = ["notice", "evict", "deposit", "landlord", "tenant", "rent", "contract"]
     if any(word in text.lower() for word in keywords):
         return "agent2"
     return "ask"
 
-# ---------- STREAMLIT UI ----------
 
-st.set_page_config(page_title="🏡 Property Assistant Chatbot")
-st.title("🏡 Multi-Agent Real Estate Assistant")
+st.set_page_config(page_title="🏠 Real Estate Multi-Agent Bot")
+st.title("🏠 Multi-Agent Real Estate Chatbot")
 
-st.markdown("""
-Welcome! This assistant can help with:
-- 🛠️ **Property issues**: Upload a photo to detect problems like cracks or mold.
-- 📄 **Tenancy questions**: Ask about rent, evictions, deposits, and more.
+st.write("Ask about property issues or tenancy laws. Upload an image if reporting a physical problem.")
 
-Let’s get started!
-""")
+image = st.file_uploader("Upload a property image (optional)", type=["png", "jpg", "jpeg"])
+text_input = st.text_area("Enter your question or context")
 
-image = st.file_uploader("📸 Upload an image of the property (optional)", type=["png", "jpg", "jpeg"])
-text_input = st.text_area("💬 Describe the issue or ask your question")
-
-if st.button("🧠 Get Answer"):
+if st.button("Submit"):
     if not text_input and not image:
-        st.warning("⚠️ Please enter a question or upload an image.")
+        st.warning("Please provide some input.")
     else:
         agent = route_agent(image, text_input)
 
         if agent == "agent1":
-            st.info("🛠️ Looks like you're reporting a property issue...")
-            with st.spinner("🔍 Analyzing the image and preparing suggestions..."):
+            st.info("Routing to Property Issue Agent 🛠️")
+            with st.spinner("Analyzing image..."):
                 caption = caption_image(image)
-                result = agent1_chain.run({"caption": caption, "text": text_input})
-            st.success("✅ Here's what I found:")
-            st.write(result)
+                result = agent1_chain.invoke({"caption": caption, "text": text_input})
+            st.success(result)
 
         elif agent == "agent2":
-            st.info("📄 Your question seems related to tenancy or legal matters...")
-            with st.spinner("🧑‍⚖️ Reviewing legal guidance..."):
-                result = agent2_chain.run({"input": text_input})
-            st.success("✅ Here's what I found:")
-            st.write(result)
+            st.info("Routing to Tenancy FAQ Agent 📄")
+            with st.spinner("Fetching legal advice..."):
+                result = agent2_chain.invoke({"input": text_input})
+            st.success(result)
+
+            # Optional: Show model usage
+            if hasattr(result, "response_metadata"):
+                with st.expander("View model debug info"):
+                    st.json(result.response_metadata)
 
         else:
-            st.warning("🤖 I'm not sure what you're asking. Are you reporting a property issue or asking a legal question?")
+            st.warning("Not sure how to help. Is this about a property issue or a legal question?")
